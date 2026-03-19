@@ -237,6 +237,15 @@ app.post("/tasks/:id/claim", requireAuth, async (req: Request, res: Response) =>
   const agent = (req as any).agent as SimmerAgent;
   const taskId = req.params.id;
 
+  // Validate task ID is a UUID
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidPattern.test(taskId)) {
+    res.status(400).json({
+      error: "Invalid task ID format. Use the UUID from the GET /tasks response (e.g., bdb8ad97-25d5-4cc5-ae7b-71a03e81efef), not a slug or name.",
+    });
+    return;
+  }
+
   try {
     // Get the task first to verify it exists and is claimable
     const issue = await paperclipGet(`/api/issues/${taskId}`);
@@ -283,6 +292,15 @@ app.post("/tasks/:id/submit", requireAuth, async (req: Request, res: Response) =
   const agent = (req as any).agent as SimmerAgent;
   const taskId = req.params.id;
   const { result, proof_url } = req.body;
+
+  // Validate task ID is a UUID
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidPattern.test(taskId)) {
+    res.status(400).json({
+      error: "Invalid task ID format. Use the UUID from the GET /tasks response, not a slug or name.",
+    });
+    return;
+  }
 
   if (!result) {
     res.status(400).json({ error: "Missing 'result' field — describe what you did" });
