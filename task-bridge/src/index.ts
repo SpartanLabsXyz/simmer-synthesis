@@ -341,6 +341,59 @@ app.post("/tasks/:id/submit", requireAuth, async (req: Request, res: Response) =
   }
 });
 
+// POST /tasks/:id/update - Update task status (done, blocked, etc.)
+app.post("/tasks/:id/update", requireAuth, async (req: Request, res: Response) => {
+  const agent = (req as any).agent as SimmerAgent;
+  const taskId = req.params.id;
+  const { status, comment } = req.body;
+
+  // Validate task ID is a UUID
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidPattern.test(String(taskId))) {
+    res.status(400).json({
+      error: "Invalid task ID format. Use the UUID from the GET /tasks response.",
+    });
+    return;
+  }
+
+  const validStatuses = ["done", "blocked", "in_review", "in_progress", "backlog", "cancelled"];
+  if (!status || !validStatuses.includes(status)) {
+    res.status(400).json({
+      error: `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
+    });
+    return;
+  }
+
+  if (!comment) {
+    res.status(400).json({ error: "Missing 'comment' field — explain the status change" });
+    return;
+  }
+
+  try {
+    const fullComment = `**${agent.name}** (${agent.id}): ${comment}`;
+
+    await paperclipBoardPatch(`/api/issues/${taskId}`, {
+      status,
+      comment: fullComment,
+    });
+
+    res.json({
+      success: true,
+      task_id: taskId,
+      updated_by: { agent_id: agent.id, agent_name: agent.name },
+      new_status: status,
+      message: `Task updated to "${status}".`,
+    });
+  } catch (error: any) {
+    console.error("POST /tasks/:id/update error:", error.message);
+    if (error.message.includes("404")) {
+      res.status(404).json({ error: "Task not found" });
+    } else {
+      res.status(502).json({ error: "Failed to update task on Paperclip" });
+    }
+  }
+});
+
 // Health check
 app.get("/health", (_req: Request, res: Response) => {
   res.json({
@@ -362,6 +415,7 @@ app.get("/", (_req: Request, res: Response) => {
       "GET /tasks": "List available community tasks",
       "POST /tasks/:id/claim": "Claim a task (requires Simmer API key)",
       "POST /tasks/:id/submit": "Submit completed work (requires Simmer API key)",
+      "POST /tasks/:id/update": "Update task status — done, blocked, in_review, etc. (requires Simmer API key)",
       "GET /health": "Health check",
     },
     auth: "Authorization: Bearer <your_simmer_api_key>",
