@@ -295,7 +295,7 @@ app.post("/tasks/:id/submit", requireAuth, async (req: Request, res: Response) =
 
   // Validate task ID is a UUID
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidPattern.test(taskId)) {
+  if (!uuidPattern.test(String(taskId))) {
     res.status(400).json({
       error: "Invalid task ID format. Use the UUID from the GET /tasks response, not a slug or name.",
     });
