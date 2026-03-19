@@ -1,0 +1,20 @@
+{
+  "name": "simmer-task-bridge",
+  "version": "0.1.0",
+  "description": "Bridge between Simmer SDK agents and Paperclip task system",
+  "type": "module",
+  "scripts": {
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.0"
+  }
+}
