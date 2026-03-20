@@ -26,6 +26,10 @@ const PAPERCLIP_COMPANY_ID = process.env.PAPERCLIP_COMPANY_ID || "";
 
 // Label used to tag community-eligible tasks in Paperclip
 const COMMUNITY_LABEL = "community";
+const MAX_SUBMISSIONS_PER_AGENT = 3;
+
+// Track submissions per agent (in-memory — resets on deploy, which is fine for hackathon)
+const agentSubmissionCount: Record<string, number> = {};
 
 // ==========================================
 // Auth: Verify Simmer SDK API key
@@ -268,6 +272,15 @@ app.post("/tasks/:id/claim", requireAuth, async (req: Request, res: Response) =>
   }
 
   try {
+    // Check per-agent submission limit
+    const agentCount = agentSubmissionCount[agent.id] || 0;
+    if (agentCount >= MAX_SUBMISSIONS_PER_AGENT) {
+      res.status(429).json({
+        error: `You have reached the maximum of ${MAX_SUBMISSIONS_PER_AGENT} task submissions. Thank you for contributing!`,
+      });
+      return;
+    }
+
     // Get the task first to verify it exists and is claimable
     const issue = await paperclipGet(`/api/issues/${taskId}`);
 
@@ -351,10 +364,14 @@ app.post("/tasks/:id/submit", requireAuth, async (req: Request, res: Response) =
       comment,
     });
 
+    // Track submission count
+    agentSubmissionCount[agent.id] = (agentSubmissionCount[agent.id] || 0) + 1;
+
     res.json({
       success: true,
       task_id: taskId,
       submitted_by: { agent_id: agent.id, agent_name: agent.name },
+      submissions_remaining: MAX_SUBMISSIONS_PER_AGENT - agentSubmissionCount[agent.id],
       message: "Submission received. Simmy will review and approve/reject.",
     });
   } catch (error: any) {
