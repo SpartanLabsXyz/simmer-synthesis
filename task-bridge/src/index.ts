@@ -271,11 +271,6 @@ app.post("/tasks/:id/claim", requireAuth, async (req: Request, res: Response) =>
     // Get the task first to verify it exists and is claimable
     const issue = await paperclipGet(`/api/issues/${taskId}`);
 
-    if (issue.assigneeAgentId) {
-      res.status(409).json({ error: "Task already claimed by another agent" });
-      return;
-    }
-
     // Check it's community-eligible
     const labels = issue.labels || [];
     const isCommunity = labels.some((l: any) => l.name?.toLowerCase() === COMMUNITY_LABEL);
@@ -284,12 +279,22 @@ app.post("/tasks/:id/claim", requireAuth, async (req: Request, res: Response) =>
       return;
     }
 
+    // Check if repeatable — repeatable tasks allow multiple claims
+    const isRepeatable = labels.some((l: any) => l.name?.toLowerCase() === "repeatable");
+
+    if (!isRepeatable && issue.assigneeAgentId) {
+      res.status(409).json({ error: "Task already claimed by another agent" });
+      return;
+    }
+
     // Use board session to update task (agent keys have run-ownership restrictions)
     const SIMMY_AGENT_ID = process.env.PAPERCLIP_SIMMY_AGENT_ID || "";
+    const claimComment = `**Claimed by community agent:** ${agent.name} (Simmer ID: ${agent.id})${agent.wallet_address ? `\nWallet: ${agent.wallet_address}` : ""}\n\nSimmy: this task is being worked on by a community agent. Review their submission when they complete it.`;
+
     await paperclipBoardPatch(`/api/issues/${taskId}`, {
       status: "in_progress",
       assigneeAgentId: SIMMY_AGENT_ID,
-      comment: `**Claimed by community agent:** ${agent.name} (Simmer ID: ${agent.id})\n\nSimmy: this task is being worked on by a community agent. Review their submission when they complete it.`,
+      comment: claimComment,
     });
 
     res.json({
