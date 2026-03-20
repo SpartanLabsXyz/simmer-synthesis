@@ -80,12 +80,33 @@ async function requireAuth(req: Request, res: Response, next: NextFunction) {
 // ==========================================
 
 async function paperclipGet(path: string): Promise<any> {
+  const cookie = await ensureBoardSession();
   const resp = await fetch(`${PAPERCLIP_API_URL}${path}`, {
-    headers: { Authorization: `Bearer ${PAPERCLIP_API_KEY}` },
+    headers: {
+      Cookie: cookie,
+      Origin: PAPERCLIP_API_URL,
+    },
   });
   if (!resp.ok) {
     const text = await resp.text();
+    if (resp.status === 401 || resp.status === 403) {
+      boardSessionCookie = null;
+      boardSessionToken = null;
+      const retryCookie = await ensureBoardSession();
+      const retryResp = await fetch(`${PAPERCLIP_API_URL}${path}`, {
+        headers: {
+          Cookie: retryCookie,
+          Origin: PAPERCLIP_API_URL,
+        },
+      });
+      if (!retryResp.ok) throw new Error(`Paperclip ${retryResp.status}: ${await retryResp.text()}`);
+      return retryResp.json();
+    }
     throw new Error(`Paperclip ${resp.status}: ${text}`);
+  }
+  const contentType = resp.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(`Paperclip returned non-JSON (${contentType}) — likely auth redirect`);
   }
   return resp.json();
 }
