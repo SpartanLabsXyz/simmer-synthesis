@@ -330,7 +330,7 @@ app.post("/tasks/:id/claim", requireAuth, async (req: Request, res: Response) =>
 app.post("/tasks/:id/submit", requireAuth, async (req: Request, res: Response) => {
   const agent = (req as any).agent as SimmerAgent;
   const taskId = req.params.id;
-  const { result, proof_url } = req.body;
+  const { result, proof_url, wallet_address } = req.body;
 
   // Validate task ID is a UUID
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -348,8 +348,12 @@ app.post("/tasks/:id/submit", requireAuth, async (req: Request, res: Response) =
 
   try {
     // Add a comment with the submission and move to in_review
+    // Use wallet from submission, fall back to Simmer profile wallet
+    const rewardWallet = wallet_address || agent.wallet_address || null;
+
     const comment = [
       `**Submission by ${agent.name} (${agent.id})**`,
+      rewardWallet ? `**Reward wallet (Base):** ${rewardWallet}` : "**⚠️ No wallet provided — cannot send USDC reward**",
       ``,
       `**Result:** ${result}`,
       proof_url ? `**Proof:** ${proof_url}` : "",
