@@ -163,7 +163,7 @@ async function ensureBoardSession(): Promise<string> {
   const data = await resp.json() as any;
   boardSessionToken = data.token;
 
-  console.log(`Board session established. Cookies: [${cookiePairs.join(", ")}]`);
+  console.log(`Board session established (${cookiePairs.length} cookies)`);
   return boardSessionCookie;
 }
 
@@ -450,51 +450,9 @@ app.post("/tasks/:id/update", requireAuth, async (req: Request, res: Response) =
   }
 });
 
-// GET /tasks/:id/submissions - Read submissions (comments) on a task
-// Used by Simmy's plugin to review community submissions
-app.get("/tasks/:id/submissions", requireAuth, async (req: Request, res: Response) => {
-  const taskId = req.params.id;
-
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidPattern.test(String(taskId))) {
-    res.status(400).json({ error: "Invalid task ID format." });
-    return;
-  }
-
-  try {
-    const comments = await paperclipGet(`/api/issues/${taskId}/comments`);
-
-    // Filter to only submission comments (contain "Submission by")
-    const submissions = (Array.isArray(comments) ? comments : [])
-      .filter((c: any) => c.body?.includes("**Submission by"))
-      .map((c: any) => ({
-        id: c.id,
-        body: c.body,
-        created_at: c.createdAt || c.created_at,
-      }));
-
-    // Get task details for context
-    const issue = await paperclipGet(`/api/issues/${taskId}`);
-
-    res.json({
-      task_id: taskId,
-      identifier: issue.identifier,
-      title: issue.title,
-      status: issue.status,
-      submissions,
-    });
-  } catch (error: any) {
-    console.error("GET /tasks/:id/submissions error:", error.message);
-    if (error.message.includes("404")) {
-      res.status(404).json({ error: "Task not found" });
-    } else {
-      res.status(502).json({ error: "Failed to read submissions from Paperclip" });
-    }
-  }
-});
-
 // GET /tasks/pending-review - List all tasks with pending submissions
 // Simmy polls this to find tasks that need review
+// IMPORTANT: must be registered before /tasks/:id routes to avoid Express matching "pending-review" as :id
 app.get("/tasks/pending-review", requireAuth, async (req: Request, res: Response) => {
   try {
     // Get in_review tasks (non-repeatable with submissions)
@@ -550,6 +508,49 @@ app.get("/tasks/pending-review", requireAuth, async (req: Request, res: Response
   } catch (error: any) {
     console.error("GET /tasks/pending-review error:", error.message);
     res.status(502).json({ error: "Failed to fetch pending reviews from Paperclip" });
+  }
+});
+
+// GET /tasks/:id/submissions - Read submissions (comments) on a task
+// Used by Simmy's plugin to review community submissions
+app.get("/tasks/:id/submissions", requireAuth, async (req: Request, res: Response) => {
+  const taskId = req.params.id;
+
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidPattern.test(String(taskId))) {
+    res.status(400).json({ error: "Invalid task ID format." });
+    return;
+  }
+
+  try {
+    const comments = await paperclipGet(`/api/issues/${taskId}/comments`);
+
+    // Filter to only submission comments (contain "Submission by")
+    const submissions = (Array.isArray(comments) ? comments : [])
+      .filter((c: any) => c.body?.includes("**Submission by"))
+      .map((c: any) => ({
+        id: c.id,
+        body: c.body,
+        created_at: c.createdAt || c.created_at,
+      }));
+
+    // Get task details for context
+    const issue = await paperclipGet(`/api/issues/${taskId}`);
+
+    res.json({
+      task_id: taskId,
+      identifier: issue.identifier,
+      title: issue.title,
+      status: issue.status,
+      submissions,
+    });
+  } catch (error: any) {
+    console.error("GET /tasks/:id/submissions error:", error.message);
+    if (error.message.includes("404")) {
+      res.status(404).json({ error: "Task not found" });
+    } else {
+      res.status(502).json({ error: "Failed to read submissions from Paperclip" });
+    }
   }
 });
 
