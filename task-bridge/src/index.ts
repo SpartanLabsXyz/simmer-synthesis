@@ -347,7 +347,12 @@ app.post("/tasks/:id/submit", requireAuth, async (req: Request, res: Response) =
   }
 
   try {
-    // Add a comment with the submission and move to in_review
+    // Get the task to check if it's repeatable
+    const issue = await paperclipGet(`/api/issues/${taskId}`);
+    const labels = issue.labels || [];
+    const isRepeatable = labels.some((l: any) => l.name?.toLowerCase() === "repeatable");
+
+    // Add a comment with the submission
     // Use wallet from submission, fall back to Simmer profile wallet
     const rewardWallet = wallet_address || agent.wallet_address || null;
 
@@ -363,10 +368,14 @@ app.post("/tasks/:id/submit", requireAuth, async (req: Request, res: Response) =
       .filter(Boolean)
       .join("\n");
 
-    await paperclipBoardPatch(`/api/issues/${taskId}`, {
-      status: "in_review",
-      comment,
-    });
+    // Repeatable tasks stay in backlog so other agents can still claim
+    // Non-repeatable tasks move to in_review
+    const patchBody: any = { comment };
+    if (!isRepeatable) {
+      patchBody.status = "in_review";
+    }
+
+    await paperclipBoardPatch(`/api/issues/${taskId}`, patchBody);
 
     // Track submission count
     agentSubmissionCount[agent.id] = (agentSubmissionCount[agent.id] || 0) + 1;
@@ -441,6 +450,109 @@ app.post("/tasks/:id/update", requireAuth, async (req: Request, res: Response) =
   }
 });
 
+// GET /tasks/:id/submissions - Read submissions (comments) on a task
+// Used by Simmy's plugin to review community submissions
+app.get("/tasks/:id/submissions", requireAuth, async (req: Request, res: Response) => {
+  const taskId = req.params.id;
+
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidPattern.test(String(taskId))) {
+    res.status(400).json({ error: "Invalid task ID format." });
+    return;
+  }
+
+  try {
+    const comments = await paperclipGet(`/api/issues/${taskId}/comments`);
+
+    // Filter to only submission comments (contain "Submission by")
+    const submissions = (Array.isArray(comments) ? comments : [])
+      .filter((c: any) => c.body?.includes("**Submission by"))
+      .map((c: any) => ({
+        id: c.id,
+        body: c.body,
+        created_at: c.createdAt || c.created_at,
+      }));
+
+    // Get task details for context
+    const issue = await paperclipGet(`/api/issues/${taskId}`);
+
+    res.json({
+      task_id: taskId,
+      identifier: issue.identifier,
+      title: issue.title,
+      status: issue.status,
+      submissions,
+    });
+  } catch (error: any) {
+    console.error("GET /tasks/:id/submissions error:", error.message);
+    if (error.message.includes("404")) {
+      res.status(404).json({ error: "Task not found" });
+    } else {
+      res.status(502).json({ error: "Failed to read submissions from Paperclip" });
+    }
+  }
+});
+
+// GET /tasks/pending-review - List all tasks with pending submissions
+// Simmy polls this to find tasks that need review
+app.get("/tasks/pending-review", requireAuth, async (req: Request, res: Response) => {
+  try {
+    // Get in_review tasks (non-repeatable with submissions)
+    const inReviewIssues = await paperclipGet(
+      `/api/companies/${PAPERCLIP_COMPANY_ID}/issues?status=in_review`
+    );
+
+    // Get backlog tasks that are repeatable (may have submissions as comments)
+    const backlogIssues = await paperclipGet(
+      `/api/companies/${PAPERCLIP_COMPANY_ID}/issues?status=backlog`
+    );
+    const repeatableWithSubmissions: any[] = [];
+    for (const issue of backlogIssues) {
+      const labels = issue.labels || [];
+      const isRepeatable = labels.some((l: any) => l.name?.toLowerCase() === "repeatable");
+      const isCommunity = labels.some((l: any) => l.name?.toLowerCase() === COMMUNITY_LABEL);
+      if (isRepeatable && isCommunity) {
+        try {
+          const comments = await paperclipGet(`/api/issues/${issue.id}/comments`);
+          const hasSubmissions = Array.isArray(comments) &&
+            comments.some((c: any) => c.body?.includes("**Submission by") && c.body?.includes("Awaiting review"));
+          if (hasSubmissions) {
+            repeatableWithSubmissions.push({
+              ...issue,
+              _submissionCount: comments.filter((c: any) => c.body?.includes("**Submission by")).length,
+            });
+          }
+        } catch {
+          // Skip if we can't read comments
+        }
+      }
+    }
+
+    const allPending = [
+      ...inReviewIssues.map((i: any) => ({
+        id: i.id,
+        identifier: i.identifier,
+        title: i.title,
+        status: i.status,
+        type: "in_review",
+      })),
+      ...repeatableWithSubmissions.map((i: any) => ({
+        id: i.id,
+        identifier: i.identifier,
+        title: i.title,
+        status: i.status,
+        type: "repeatable_with_submissions",
+        submission_count: i._submissionCount,
+      })),
+    ];
+
+    res.json({ pending_review: allPending });
+  } catch (error: any) {
+    console.error("GET /tasks/pending-review error:", error.message);
+    res.status(502).json({ error: "Failed to fetch pending reviews from Paperclip" });
+  }
+});
+
 // Health check
 app.get("/health", (_req: Request, res: Response) => {
   res.json({
@@ -463,6 +575,8 @@ app.get("/", (_req: Request, res: Response) => {
       "POST /tasks/:id/claim": "Claim a task (requires Simmer API key)",
       "POST /tasks/:id/submit": "Submit completed work (requires Simmer API key)",
       "POST /tasks/:id/update": "Update task status — done, blocked, in_review, etc. (requires Simmer API key)",
+      "GET /tasks/:id/submissions": "Read submissions on a task (requires Simmer API key)",
+      "GET /tasks/pending-review": "List tasks with pending submissions awaiting review (requires Simmer API key)",
       "GET /health": "Health check",
     },
     auth: "Authorization: Bearer <your_simmer_api_key>",
