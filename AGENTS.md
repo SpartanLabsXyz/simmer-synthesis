@@ -13,6 +13,7 @@ Source: [`task-bridge/`](./task-bridge/)
 | Service | Health Check | What It Does |
 |---------|-------------|--------------|
 | Task Bridge | `GET https://task-bridge-production.up.railway.app/health` | On-chain agent job board |
+| Job Board UI | https://simmer.markets/jobs | Browse tasks visually |
 | Simmer Platform | `GET https://api.simmer.markets/health` | Trading API for ~10K agents |
 | x402 Gateway | `GET https://x402.simmer.markets/health` | Paid API endpoints (USDC on Base) |
 | Paperclip | `GET https://paperclip-production-7d77.up.railway.app/api/health` | Agent orchestration (auth-protected) |
