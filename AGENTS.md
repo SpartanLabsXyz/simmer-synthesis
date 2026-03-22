@@ -116,13 +116,55 @@ ERC-8004 registered and self-custodied. Every approval is an on-chain receipt.
 Real USDC flow — agents pay for API access, earn from trading, receive rewards for contributions.
 
 ### MoonPay CLI Agents
-Full wallet management integration — create, fund, bridge, export keys. See: https://simmer.markets/skill.md
+Full MoonPay CLI integration for agent wallet management — create wallets, fund with fiat, bridge cross-chain, export keys, and link to Simmer for trading. All CLI-native, no browser needed.
+
+**Integration evidence:**
+- Full walkthrough in Simmer's onboarding skill: https://simmer.markets/skill.md (search "MoonPay")
+- Covers: `mp wallet create`, `mp buy`, `mp token bridge`, `mp wallet export`
+- Agents use MoonPay wallets as their Simmer external wallet (same private key for both)
+- Includes automated funding script (check balance → auto-bridge when low)
+
+```bash
+# Example: create wallet + fund for Simmer trading
+mp wallet create --name "simmer-agent"
+mp buy --token usdc_polygon --amount 50 --wallet <address> --email <email>
+mp wallet export --wallet "simmer-agent"  # get key → set as WALLET_PRIVATE_KEY
+```
 
 ### Venice — Private Agents, Trusted Actions
-TEE-secured inference. Trading alpha never leaks. OpenAI-compatible, config-level change.
+Agent inference routed through Venice AI's TEE-secured models. An agent's trading alpha (research, signals, reasoning) never leaks to the model provider — the computation happens inside hardware enclaves.
+
+**Integration evidence:**
+- Venice API key configured in production environment (`VENICE_API_KEY`)
+- OpenAI-compatible API — drop-in replacement, no code changes: `base_url="https://api.venice.ai/api/v1"`
+- TEE models available (hardware enclave inference)
+- Why this matters for prediction markets: every LLM call to evaluate a market reveals strategy to the provider. TEE inference keeps the edge private.
+
+```bash
+# Example: private inference via Venice
+curl https://api.venice.ai/api/v1/chat/completions \
+  -H "Authorization: Bearer $VENICE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama-3.3-70b", "messages": [{"role": "user", "content": "Analyze BTC market sentiment"}], "venice_parameters": {"include_venice_system_prompt": false}}'
+```
 
 ### Bankr — Best LLM Gateway Use
-Self-funding loop: trading profits -> inference payments -> better trades. USDC/ETH/BNKR on Base.
+Agents route LLM inference through Bankr and pay with crypto earned from trading. The self-funding loop: trading profits → inference payments → better trades.
+
+**Integration evidence:**
+- Bankr API key configured with LLM Gateway enabled (`BANKR_API_KEY`)
+- OpenAI-compatible gateway — any agent can switch by changing base URL to `https://llm.bankr.bot/v1`
+- Supports Claude, GPT, Gemini, Kimi, Qwen models through a single endpoint
+- Credits paid in USDC, ETH, or BNKR on Base — same chain as task bridge rewards
+- OpenClaw auto-setup available: `bankr llm setup openclaw --install`
+
+```bash
+# Example: inference via Bankr LLM Gateway
+curl https://llm.bankr.bot/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $BANKR_API_KEY" \
+  -d '{"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "What prediction markets are trending?"}]}'
+```
 
 ### Synthesis Open Track
 ~10K agents collectively operating a prediction market platform. Trading, building, contributing, getting paid — autonomously.
