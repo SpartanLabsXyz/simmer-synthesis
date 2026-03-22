@@ -1,15 +1,26 @@
 /**
- * Simmer Task Bridge
+ * Paperclip Task Bridge
  *
- * Thin bridge between Simmer SDK agents and Paperclip task system.
- * Agents authenticate with their Simmer API key, this service proxies
- * task operations to Paperclip.
+ * Open-source middleware that turns a Paperclip instance into an on-chain
+ * agent job board. Any platform can deploy this to let external agents
+ * discover tasks, claim work, submit results, and get paid in USDC on Base.
+ *
+ * Auth strategies:
+ *   - "wallet"  — EIP-191 signature verification (default, no platform dependency)
+ *   - "api-key" — Verify bearer token against a configurable platform API
+ *
+ * On-chain rewards:
+ *   - Optional USDC payments on Base when tasks are approved
+ *   - Configurable reward amount per task
  *
  * Endpoints:
- *   GET  /tasks           - List available community tasks
- *   POST /tasks/:id/claim - Claim a task
- *   POST /tasks/:id/submit - Submit completed work
- *   GET  /health          - Health check
+ *   GET  /tasks                  - List available community tasks
+ *   POST /tasks/:id/claim        - Claim a task
+ *   POST /tasks/:id/submit       - Submit completed work
+ *   POST /tasks/:id/update       - Update task status
+ *   GET  /tasks/pending-review   - List tasks awaiting review
+ *   GET  /tasks/:id/submissions  - Read submissions on a task
+ *   GET  /health                 - Health check
  */
 
 import express, { Request, Response, NextFunction } from "express";
@@ -17,61 +28,139 @@ import express, { Request, Response, NextFunction } from "express";
 const app = express();
 app.use(express.json());
 
+// ==========================================
 // Configuration
+// ==========================================
+
 const PORT = parseInt(process.env.PORT || "3401", 10);
-const SIMMER_API_URL = process.env.SIMMER_API_URL || "https://api.simmer.markets";
-const PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL || "https://paperclip-production-7d77.up.railway.app";
-const PAPERCLIP_API_KEY = process.env.PAPERCLIP_API_KEY || "";
+const PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL || "";
 const PAPERCLIP_COMPANY_ID = process.env.PAPERCLIP_COMPANY_ID || "";
+const COMMUNITY_LABEL = (process.env.COMMUNITY_LABEL || "community").toLowerCase();
+const MAX_SUBMISSIONS_PER_AGENT = parseInt(process.env.MAX_SUBMISSIONS_PER_AGENT || "10", 10);
 
-// Label used to tag community-eligible tasks in Paperclip
-const COMMUNITY_LABEL = "community";
-const MAX_SUBMISSIONS_PER_AGENT = 3;
+// Auth
+const AUTH_STRATEGY = (process.env.AUTH_STRATEGY || "wallet").toLowerCase();
+const AUTH_VERIFY_URL = process.env.AUTH_VERIFY_URL || "";
 
-// Track submissions per agent (in-memory — resets on deploy, which is fine for hackathon)
+// Paperclip board credentials
+const PAPERCLIP_BOARD_EMAIL = process.env.PAPERCLIP_BOARD_EMAIL || "";
+const PAPERCLIP_BOARD_PASSWORD = process.env.PAPERCLIP_BOARD_PASSWORD || "";
+
+// CEO agent — tasks are assigned to this agent on claim so Paperclip shows ownership
+const PAPERCLIP_CEO_AGENT_ID = process.env.PAPERCLIP_CEO_AGENT_ID || "";
+
+// Rewards
+const REWARD_ENABLED = process.env.REWARD_ENABLED === "true";
+const REWARD_AMOUNT_USDC = parseFloat(process.env.REWARD_AMOUNT_USDC || "0.10");
+const REWARD_WALLET_PRIVATE_KEY = process.env.REWARD_WALLET_PRIVATE_KEY || "";
+const BASE_RPC_URL = process.env.BASE_RPC_URL || "https://base.publicnode.com";
+const USDC_CONTRACT = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"; // USDC on Base
+const BASE_CHAIN_ID = 8453;
+
+// Track submissions per agent (in-memory — resets on deploy)
 const agentSubmissionCount: Record<string, number> = {};
 
 // ==========================================
-// Auth: Verify Simmer SDK API key
+// Agent identity (auth-strategy-agnostic)
 // ==========================================
 
-interface SimmerAgent {
+interface Agent {
   id: string;
   name: string;
-  user_id: string;
   wallet_address?: string;
 }
 
-async function verifySimmerAuth(apiKey: string): Promise<SimmerAgent | null> {
+// ==========================================
+// Auth Strategy: Wallet (EIP-191)
+// ==========================================
+
+function verifyWalletAuth(authHeader: string): Agent | null {
+  // Expected format: "Bearer <address>:<timestamp>:<signature>"
+  const token = authHeader.slice(7);
+  const parts = token.split(":");
+  if (parts.length !== 3) return null;
+
+  const [address, timestamp, signature] = parts;
+
+  // Reject if timestamp is older than 5 minutes
+  const ts = parseInt(timestamp, 10);
+  if (isNaN(ts) || Math.abs(Date.now() - ts) > 5 * 60 * 1000) return null;
+
   try {
-    const resp = await fetch(`${SIMMER_API_URL}/api/sdk/agents/me`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json() as any;
+    // Lazy import ethers to avoid loading it when using api-key strategy
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { verifyMessage } = require("ethers");
+    const message = `paperclip-task-bridge:${timestamp}`;
+    const recovered = verifyMessage(message, signature);
+    if (recovered.toLowerCase() !== address.toLowerCase()) return null;
+
     return {
-      id: data.id || data.agent_id,
-      name: data.name,
-      user_id: data.user_id,
-      wallet_address: data.wallet_address,
+      id: address.toLowerCase(),
+      name: `${address.slice(0, 6)}...${address.slice(-4)}`,
+      wallet_address: address,
     };
   } catch {
     return null;
   }
 }
 
+// ==========================================
+// Auth Strategy: API Key (platform webhook)
+// ==========================================
+
+async function verifyApiKeyAuth(authHeader: string): Promise<Agent | null> {
+  if (!AUTH_VERIFY_URL) {
+    console.error("[auth] AUTH_STRATEGY=api-key but AUTH_VERIFY_URL not set");
+    return null;
+  }
+
+  try {
+    const resp = await fetch(AUTH_VERIFY_URL, {
+      headers: { Authorization: authHeader },
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as Record<string, unknown>;
+
+    return {
+      id: String(data.id || data.agent_id || ""),
+      name: String(data.name || data.agent_name || "unknown"),
+      wallet_address: data.wallet_address as string | undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ==========================================
 // Auth middleware
+// ==========================================
+
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) {
-    res.status(401).json({ error: "Missing Authorization: Bearer <simmer_api_key>" });
+    res.status(401).json({
+      error: "Missing Authorization header",
+      hint:
+        AUTH_STRATEGY === "wallet"
+          ? 'Format: "Bearer <address>:<timestamp_ms>:<signature>" — sign the message "paperclip-task-bridge:<timestamp_ms>" with your wallet key'
+          : "Format: \"Bearer <your_api_key>\"",
+    });
     return;
   }
 
-  const apiKey = authHeader.slice(7);
-  const agent = await verifySimmerAuth(apiKey);
-  if (!agent) {
-    res.status(401).json({ error: "Invalid Simmer API key" });
+  let agent: Agent | null = null;
+
+  if (AUTH_STRATEGY === "wallet") {
+    agent = verifyWalletAuth(authHeader);
+  } else if (AUTH_STRATEGY === "api-key") {
+    agent = await verifyApiKeyAuth(authHeader);
+  } else {
+    res.status(500).json({ error: `Unknown AUTH_STRATEGY: ${AUTH_STRATEGY}` });
+    return;
+  }
+
+  if (!agent || !agent.id) {
+    res.status(401).json({ error: "Authentication failed" });
     return;
   }
 
@@ -80,64 +169,10 @@ async function requireAuth(req: Request, res: Response, next: NextFunction) {
 }
 
 // ==========================================
-// Paperclip helpers
+// Paperclip board session
 // ==========================================
 
-async function paperclipGet(path: string): Promise<any> {
-  const cookie = await ensureBoardSession();
-  const resp = await fetch(`${PAPERCLIP_API_URL}${path}`, {
-    headers: {
-      Cookie: cookie,
-      Origin: PAPERCLIP_API_URL,
-    },
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    if (resp.status === 401 || resp.status === 403) {
-      boardSessionCookie = null;
-      boardSessionToken = null;
-      const retryCookie = await ensureBoardSession();
-      const retryResp = await fetch(`${PAPERCLIP_API_URL}${path}`, {
-        headers: {
-          Cookie: retryCookie,
-          Origin: PAPERCLIP_API_URL,
-        },
-      });
-      if (!retryResp.ok) throw new Error(`Paperclip ${retryResp.status}: ${await retryResp.text()}`);
-      return retryResp.json();
-    }
-    throw new Error(`Paperclip ${resp.status}: ${text}`);
-  }
-  const contentType = resp.headers.get("content-type") || "";
-  if (!contentType.includes("application/json")) {
-    throw new Error(`Paperclip returned non-JSON (${contentType}) — likely auth redirect`);
-  }
-  return resp.json();
-}
-
-async function paperclipPost(path: string, body: any): Promise<any> {
-  const runId = `task-bridge-${Date.now()}`;
-  const resp = await fetch(`${PAPERCLIP_API_URL}${path}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${PAPERCLIP_API_KEY}`,
-      "Content-Type": "application/json",
-      "X-Paperclip-Run-Id": runId,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Paperclip ${resp.status}: ${text}`);
-  }
-  return resp.json();
-}
-
-// Board-level PATCH (uses email/password session — no run-ownership restrictions)
-const PAPERCLIP_BOARD_EMAIL = process.env.PAPERCLIP_BOARD_EMAIL || "";
-const PAPERCLIP_BOARD_PASSWORD = process.env.PAPERCLIP_BOARD_PASSWORD || "";
 let boardSessionCookie: string | null = null;
-let boardSessionToken: string | null = null;
 
 async function ensureBoardSession(): Promise<string> {
   if (boardSessionCookie) return boardSessionCookie;
@@ -146,99 +181,153 @@ async function ensureBoardSession(): Promise<string> {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Origin": PAPERCLIP_API_URL,
+      Origin: PAPERCLIP_API_URL,
     },
-    body: JSON.stringify({ email: PAPERCLIP_BOARD_EMAIL, password: PAPERCLIP_BOARD_PASSWORD }),
+    body: JSON.stringify({
+      email: PAPERCLIP_BOARD_EMAIL,
+      password: PAPERCLIP_BOARD_PASSWORD,
+    }),
   });
   if (!resp.ok) throw new Error(`Board sign-in failed: ${resp.status}`);
 
-  // Extract ALL set-cookie headers and keep just name=value pairs
   const setCookieHeaders = resp.headers.getSetCookie();
   const cookiePairs = setCookieHeaders
     .map((c: string) => c.split(";")[0].trim())
     .filter(Boolean);
 
   boardSessionCookie = cookiePairs.join("; ");
-
-  const data = await resp.json() as any;
-  boardSessionToken = data.token;
-
-  console.log(`Board session established (${cookiePairs.length} cookies)`);
+  await resp.json(); // consume body
+  console.log(`[paperclip] Board session established (${cookiePairs.length} cookies)`);
   return boardSessionCookie;
 }
 
-async function paperclipBoardPatch(path: string, body: any): Promise<any> {
+// ==========================================
+// Paperclip API helpers
+// ==========================================
+
+async function paperclipGet(path: string): Promise<any> {
   const cookie = await ensureBoardSession();
   const resp = await fetch(`${PAPERCLIP_API_URL}${path}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "Cookie": cookie,
-      "Origin": PAPERCLIP_API_URL,
-    },
-    body: JSON.stringify(body),
+    headers: { Cookie: cookie, Origin: PAPERCLIP_API_URL },
   });
-  if (!resp.ok) {
-    const text = await resp.text();
-    if (resp.status === 401 || resp.status === 403) {
-      // Session expired — retry with fresh login
-      boardSessionCookie = null;
-      boardSessionToken = null;
-      const retryCookie = await ensureBoardSession();
-      const retryResp = await fetch(`${PAPERCLIP_API_URL}${path}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "Cookie": retryCookie,
-          "Origin": PAPERCLIP_API_URL,
-        },
-        body: JSON.stringify(body),
-      });
-      if (!retryResp.ok) throw new Error(`Paperclip ${retryResp.status}: ${await retryResp.text()}`);
-      return retryResp.json();
-    }
-    throw new Error(`Paperclip ${resp.status}: ${text}`);
+
+  if (resp.status === 401 || resp.status === 403) {
+    boardSessionCookie = null;
+    const retryCookie = await ensureBoardSession();
+    const retryResp = await fetch(`${PAPERCLIP_API_URL}${path}`, {
+      headers: { Cookie: retryCookie, Origin: PAPERCLIP_API_URL },
+    });
+    if (!retryResp.ok) throw new Error(`Paperclip ${retryResp.status}: ${await retryResp.text()}`);
+    return retryResp.json();
+  }
+
+  if (!resp.ok) throw new Error(`Paperclip ${resp.status}: ${await resp.text()}`);
+
+  const contentType = resp.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(`Paperclip returned non-JSON (${contentType}) — likely auth redirect`);
   }
   return resp.json();
 }
 
 async function paperclipPatch(path: string, body: any): Promise<any> {
-  const runId = `task-bridge-${Date.now()}`;
+  const cookie = await ensureBoardSession();
   const resp = await fetch(`${PAPERCLIP_API_URL}${path}`, {
     method: "PATCH",
     headers: {
-      Authorization: `Bearer ${PAPERCLIP_API_KEY}`,
       "Content-Type": "application/json",
-      "X-Paperclip-Run-Id": runId,
+      Cookie: cookie,
+      Origin: PAPERCLIP_API_URL,
     },
     body: JSON.stringify(body),
   });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Paperclip ${resp.status}: ${text}`);
+
+  if (resp.status === 401 || resp.status === 403) {
+    boardSessionCookie = null;
+    const retryCookie = await ensureBoardSession();
+    const retryResp = await fetch(`${PAPERCLIP_API_URL}${path}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: retryCookie,
+        Origin: PAPERCLIP_API_URL,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!retryResp.ok) throw new Error(`Paperclip ${retryResp.status}: ${await retryResp.text()}`);
+    return retryResp.json();
   }
+
+  if (!resp.ok) throw new Error(`Paperclip ${resp.status}: ${await resp.text()}`);
   return resp.json();
+}
+
+// ==========================================
+// On-chain USDC rewards (Base)
+// ==========================================
+
+async function sendUsdcReward(toAddress: string, amount: number): Promise<string | null> {
+  if (!REWARD_WALLET_PRIVATE_KEY) {
+    console.error("[reward] REWARD_WALLET_PRIVATE_KEY not set");
+    return null;
+  }
+
+  try {
+    const { ethers } = await import("ethers");
+    const provider = new ethers.JsonRpcProvider(BASE_RPC_URL);
+    const wallet = new ethers.Wallet(REWARD_WALLET_PRIVATE_KEY, provider);
+
+    const usdc = new ethers.Contract(
+      USDC_CONTRACT,
+      ["function transfer(address to, uint256 amount) returns (bool)"],
+      wallet,
+    );
+
+    // USDC has 6 decimals
+    const amountRaw = BigInt(Math.round(amount * 1e6));
+    const tx = await usdc.transfer(toAddress, amountRaw);
+    const receipt = await tx.wait();
+
+    console.log(`[reward] Sent ${amount} USDC to ${toAddress} — TX: ${receipt.hash}`);
+    return receipt.hash;
+  } catch (err) {
+    console.error(`[reward] Failed to send USDC to ${toAddress}:`, err);
+    return null;
+  }
+}
+
+// ==========================================
+// UUID validation helper
+// ==========================================
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function validateTaskId(taskId: string, res: Response): boolean {
+  if (!UUID_PATTERN.test(taskId)) {
+    res.status(400).json({
+      error: "Invalid task ID format. Use the UUID from the GET /tasks response.",
+    });
+    return false;
+  }
+  return true;
 }
 
 // ==========================================
 // Endpoints
 // ==========================================
 
-// GET /tasks - List available community tasks
-app.get("/tasks", requireAuth, async (req: Request, res: Response) => {
+// GET /tasks — List available community tasks
+app.get("/tasks", requireAuth, async (_req: Request, res: Response) => {
   try {
-    // Fetch all backlog/todo issues from Paperclip that are unassigned or community-tagged
     const issues = await paperclipGet(
-      `/api/companies/${PAPERCLIP_COMPANY_ID}/issues?status=backlog,todo&limit=50`
+      `/api/companies/${PAPERCLIP_COMPANY_ID}/issues?status=backlog,todo&limit=50`,
     );
 
-    // Filter to community-eligible tasks (tagged with "community" label or unassigned)
     const communityTasks = (issues as any[]).filter((issue: any) => {
       const labels = issue.labels || [];
       return labels.some((l: any) => l.name?.toLowerCase() === COMMUNITY_LABEL);
     });
 
-    // Map to a clean public-facing format
     const tasks = communityTasks.map((issue: any) => ({
       id: issue.id,
       identifier: issue.identifier,
@@ -257,34 +346,23 @@ app.get("/tasks", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
-// POST /tasks/:id/claim - Claim a task
+// POST /tasks/:id/claim — Claim a task
 app.post("/tasks/:id/claim", requireAuth, async (req: Request, res: Response) => {
-  const agent = (req as any).agent as SimmerAgent;
+  const agent = (req as any).agent as Agent;
   const taskId = req.params.id;
-
-  // Validate task ID is a UUID
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidPattern.test(String(taskId))) {
-    res.status(400).json({
-      error: "Invalid task ID format. Use the UUID from the GET /tasks response (e.g., bdb8ad97-25d5-4cc5-ae7b-71a03e81efef), not a slug or name.",
-    });
-    return;
-  }
+  if (!validateTaskId(taskId, res)) return;
 
   try {
-    // Check per-agent submission limit
     const agentCount = agentSubmissionCount[agent.id] || 0;
     if (agentCount >= MAX_SUBMISSIONS_PER_AGENT) {
       res.status(429).json({
-        error: `You have reached the maximum of ${MAX_SUBMISSIONS_PER_AGENT} task submissions. Thank you for contributing!`,
+        error: `You have reached the maximum of ${MAX_SUBMISSIONS_PER_AGENT} task submissions.`,
       });
       return;
     }
 
-    // Get the task first to verify it exists and is claimable
     const issue = await paperclipGet(`/api/issues/${taskId}`);
 
-    // Check it's community-eligible
     const labels = issue.labels || [];
     const isCommunity = labels.some((l: any) => l.name?.toLowerCase() === COMMUNITY_LABEL);
     if (!isCommunity) {
@@ -292,125 +370,109 @@ app.post("/tasks/:id/claim", requireAuth, async (req: Request, res: Response) =>
       return;
     }
 
-    // Check if repeatable — repeatable tasks allow multiple claims
     const isRepeatable = labels.some((l: any) => l.name?.toLowerCase() === "repeatable");
-
     if (!isRepeatable && issue.assigneeAgentId) {
       res.status(409).json({ error: "Task already claimed by another agent" });
       return;
     }
 
-    // Use board session to update task (agent keys have run-ownership restrictions)
-    const SIMMY_AGENT_ID = process.env.PAPERCLIP_SIMMY_AGENT_ID || "";
-    const claimComment = `**Claimed by community agent:** ${agent.name} (Simmer ID: ${agent.id})${agent.wallet_address ? `\nWallet: ${agent.wallet_address}` : ""}\n\nSimmy: this task is being worked on by a community agent. Review their submission when they complete it.`;
+    const claimComment = [
+      `**Claimed by agent:** ${agent.name} (${agent.id})`,
+      agent.wallet_address ? `Wallet: ${agent.wallet_address}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
 
-    await paperclipBoardPatch(`/api/issues/${taskId}`, {
-      status: "in_progress",
-      assigneeAgentId: SIMMY_AGENT_ID,
-      comment: claimComment,
-    });
+    const patchBody: any = { status: "in_progress", comment: claimComment };
+    if (PAPERCLIP_CEO_AGENT_ID) {
+      patchBody.assigneeAgentId = PAPERCLIP_CEO_AGENT_ID;
+    }
+
+    await paperclipPatch(`/api/issues/${taskId}`, patchBody);
 
     res.json({
       success: true,
       task_id: taskId,
-      claimed_by: { agent_id: agent.id, agent_name: agent.name },
-      message: "Task claimed. Complete the work described in the task, then call POST /tasks/:id/submit with your result.",
+      claimed_by: { id: agent.id, name: agent.name },
+      message:
+        "Task claimed. Complete the work described in the task, then call POST /tasks/:id/submit with your result.",
     });
   } catch (error: any) {
     console.error("POST /tasks/:id/claim error:", error.message);
     if (error.message.includes("404")) {
       res.status(404).json({ error: "Task not found" });
     } else {
-      res.status(502).json({ error: "Failed to claim task on Paperclip" });
+      res.status(502).json({ error: "Failed to claim task" });
     }
   }
 });
 
-// POST /tasks/:id/submit - Submit completed work
+// POST /tasks/:id/submit — Submit completed work
 app.post("/tasks/:id/submit", requireAuth, async (req: Request, res: Response) => {
-  const agent = (req as any).agent as SimmerAgent;
+  const agent = (req as any).agent as Agent;
   const taskId = req.params.id;
+  if (!validateTaskId(taskId, res)) return;
+
   const { result, proof_url, wallet_address } = req.body;
-
-  // Validate task ID is a UUID
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidPattern.test(String(taskId))) {
-    res.status(400).json({
-      error: "Invalid task ID format. Use the UUID from the GET /tasks response, not a slug or name.",
-    });
-    return;
-  }
-
   if (!result) {
     res.status(400).json({ error: "Missing 'result' field — describe what you did" });
     return;
   }
 
   try {
-    // Get the task to check if it's repeatable
     const issue = await paperclipGet(`/api/issues/${taskId}`);
     const labels = issue.labels || [];
     const isRepeatable = labels.some((l: any) => l.name?.toLowerCase() === "repeatable");
 
-    // Add a comment with the submission
-    // Use wallet from submission, fall back to Simmer profile wallet
     const rewardWallet = wallet_address || agent.wallet_address || null;
 
     const comment = [
       `**Submission by ${agent.name} (${agent.id})**`,
-      rewardWallet ? `**Reward wallet (Base):** ${rewardWallet}` : "**⚠️ No wallet provided — cannot send USDC reward**",
-      ``,
+      rewardWallet
+        ? `**Reward wallet (Base):** ${rewardWallet}`
+        : "**No wallet provided — cannot send reward**",
+      "",
       `**Result:** ${result}`,
       proof_url ? `**Proof:** ${proof_url}` : "",
-      ``,
-      `_Awaiting review by Simmy._`,
+      "",
+      "_Awaiting review._",
     ]
       .filter(Boolean)
       .join("\n");
 
-    // Repeatable tasks stay in backlog so other agents can still claim
-    // Non-repeatable tasks move to in_review
     const patchBody: any = { comment };
     if (!isRepeatable) {
       patchBody.status = "in_review";
     }
 
-    await paperclipBoardPatch(`/api/issues/${taskId}`, patchBody);
+    await paperclipPatch(`/api/issues/${taskId}`, patchBody);
 
-    // Track submission count
     agentSubmissionCount[agent.id] = (agentSubmissionCount[agent.id] || 0) + 1;
 
     res.json({
       success: true,
       task_id: taskId,
-      submitted_by: { agent_id: agent.id, agent_name: agent.name },
+      submitted_by: { id: agent.id, name: agent.name },
       submissions_remaining: MAX_SUBMISSIONS_PER_AGENT - agentSubmissionCount[agent.id],
-      message: "Submission received. Simmy will review and approve/reject.",
+      message: "Submission received. Awaiting review.",
     });
   } catch (error: any) {
     console.error("POST /tasks/:id/submit error:", error.message);
     if (error.message.includes("404")) {
       res.status(404).json({ error: "Task not found" });
     } else {
-      res.status(502).json({ error: "Failed to submit to Paperclip" });
+      res.status(502).json({ error: "Failed to submit work" });
     }
   }
 });
 
-// POST /tasks/:id/update - Update task status (done, blocked, etc.)
+// POST /tasks/:id/update — Update task status (done, blocked, etc.)
 app.post("/tasks/:id/update", requireAuth, async (req: Request, res: Response) => {
-  const agent = (req as any).agent as SimmerAgent;
+  const agent = (req as any).agent as Agent;
   const taskId = req.params.id;
-  const { status, comment } = req.body;
+  if (!validateTaskId(taskId, res)) return;
 
-  // Validate task ID is a UUID
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidPattern.test(String(taskId))) {
-    res.status(400).json({
-      error: "Invalid task ID format. Use the UUID from the GET /tasks response.",
-    });
-    return;
-  }
+  const { status, comment } = req.body;
 
   const validStatuses = ["done", "blocked", "in_review", "in_progress", "backlog", "cancelled"];
   if (!status || !validStatuses.includes(status)) {
@@ -427,43 +489,77 @@ app.post("/tasks/:id/update", requireAuth, async (req: Request, res: Response) =
 
   try {
     const fullComment = `**${agent.name}** (${agent.id}): ${comment}`;
+    await paperclipPatch(`/api/issues/${taskId}`, { status, comment: fullComment });
 
-    await paperclipBoardPatch(`/api/issues/${taskId}`, {
-      status,
-      comment: fullComment,
-    });
+    // Auto-pay on approval if rewards are enabled
+    let reward_tx: string | null = null;
+    if (status === "done" && REWARD_ENABLED) {
+      // Find the submitter's wallet from the task comments
+      const walletAddress = await extractRewardWallet(taskId);
+      if (walletAddress) {
+        reward_tx = await sendUsdcReward(walletAddress, REWARD_AMOUNT_USDC);
+      } else {
+        console.warn(`[reward] Task ${taskId} approved but no reward wallet found in submissions`);
+      }
+    }
 
-    res.json({
+    const response: any = {
       success: true,
       task_id: taskId,
-      updated_by: { agent_id: agent.id, agent_name: agent.name },
+      updated_by: { id: agent.id, name: agent.name },
       new_status: status,
       message: `Task updated to "${status}".`,
-    });
+    };
+
+    if (reward_tx) {
+      response.reward = {
+        tx_hash: reward_tx,
+        amount_usdc: REWARD_AMOUNT_USDC,
+        explorer: `https://basescan.org/tx/${reward_tx}`,
+      };
+    }
+
+    res.json(response);
   } catch (error: any) {
     console.error("POST /tasks/:id/update error:", error.message);
     if (error.message.includes("404")) {
       res.status(404).json({ error: "Task not found" });
     } else {
-      res.status(502).json({ error: "Failed to update task on Paperclip" });
+      res.status(502).json({ error: "Failed to update task" });
     }
   }
 });
 
-// GET /tasks/pending-review - List all tasks with pending submissions
-// Simmy polls this to find tasks that need review
-// IMPORTANT: must be registered before /tasks/:id routes to avoid Express matching "pending-review" as :id
-app.get("/tasks/pending-review", requireAuth, async (req: Request, res: Response) => {
+// Helper: extract reward wallet from task submission comments
+async function extractRewardWallet(taskId: string): Promise<string | null> {
   try {
-    // Get in_review tasks (non-repeatable with submissions)
+    const comments = await paperclipGet(`/api/issues/${taskId}/comments`);
+    if (!Array.isArray(comments)) return null;
+
+    // Find the most recent submission comment with a wallet
+    for (let i = comments.length - 1; i >= 0; i--) {
+      const body: string = comments[i].body || "";
+      const match = body.match(/\*\*Reward wallet \(Base\):\*\*\s*(0x[0-9a-fA-F]{40})/);
+      if (match) return match[1];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// GET /tasks/pending-review — List tasks awaiting review
+// IMPORTANT: registered before /tasks/:id to avoid Express matching "pending-review" as :id
+app.get("/tasks/pending-review", requireAuth, async (_req: Request, res: Response) => {
+  try {
     const inReviewIssues = await paperclipGet(
-      `/api/companies/${PAPERCLIP_COMPANY_ID}/issues?status=in_review`
+      `/api/companies/${PAPERCLIP_COMPANY_ID}/issues?status=in_review`,
     );
 
-    // Get backlog tasks that are repeatable (may have submissions as comments)
     const backlogIssues = await paperclipGet(
-      `/api/companies/${PAPERCLIP_COMPANY_ID}/issues?status=backlog`
+      `/api/companies/${PAPERCLIP_COMPANY_ID}/issues?status=backlog`,
     );
+
     const repeatableWithSubmissions: any[] = [];
     for (const issue of backlogIssues) {
       const labels = issue.labels || [];
@@ -472,12 +568,17 @@ app.get("/tasks/pending-review", requireAuth, async (req: Request, res: Response
       if (isRepeatable && isCommunity) {
         try {
           const comments = await paperclipGet(`/api/issues/${issue.id}/comments`);
-          const hasSubmissions = Array.isArray(comments) &&
-            comments.some((c: any) => c.body?.includes("**Submission by") && c.body?.includes("Awaiting review"));
+          const hasSubmissions =
+            Array.isArray(comments) &&
+            comments.some(
+              (c: any) =>
+                c.body?.includes("**Submission by") && c.body?.includes("Awaiting review"),
+            );
           if (hasSubmissions) {
             repeatableWithSubmissions.push({
               ...issue,
-              _submissionCount: comments.filter((c: any) => c.body?.includes("**Submission by")).length,
+              _submissionCount: comments.filter((c: any) => c.body?.includes("**Submission by"))
+                .length,
             });
           }
         } catch {
@@ -507,25 +608,17 @@ app.get("/tasks/pending-review", requireAuth, async (req: Request, res: Response
     res.json({ pending_review: allPending });
   } catch (error: any) {
     console.error("GET /tasks/pending-review error:", error.message);
-    res.status(502).json({ error: "Failed to fetch pending reviews from Paperclip" });
+    res.status(502).json({ error: "Failed to fetch pending reviews" });
   }
 });
 
-// GET /tasks/:id/submissions - Read submissions (comments) on a task
-// Used by Simmy's plugin to review community submissions
+// GET /tasks/:id/submissions — Read submissions on a task
 app.get("/tasks/:id/submissions", requireAuth, async (req: Request, res: Response) => {
   const taskId = req.params.id;
-
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidPattern.test(String(taskId))) {
-    res.status(400).json({ error: "Invalid task ID format." });
-    return;
-  }
+  if (!validateTaskId(taskId, res)) return;
 
   try {
     const comments = await paperclipGet(`/api/issues/${taskId}/comments`);
-
-    // Filter to only submission comments (contain "Submission by")
     const submissions = (Array.isArray(comments) ? comments : [])
       .filter((c: any) => c.body?.includes("**Submission by"))
       .map((c: any) => ({
@@ -534,7 +627,6 @@ app.get("/tasks/:id/submissions", requireAuth, async (req: Request, res: Respons
         created_at: c.createdAt || c.created_at,
       }));
 
-    // Get task details for context
     const issue = await paperclipGet(`/api/issues/${taskId}`);
 
     res.json({
@@ -549,7 +641,7 @@ app.get("/tasks/:id/submissions", requireAuth, async (req: Request, res: Respons
     if (error.message.includes("404")) {
       res.status(404).json({ error: "Task not found" });
     } else {
-      res.status(502).json({ error: "Failed to read submissions from Paperclip" });
+      res.status(502).json({ error: "Failed to read submissions" });
     }
   }
 });
@@ -558,35 +650,47 @@ app.get("/tasks/:id/submissions", requireAuth, async (req: Request, res: Respons
 app.get("/health", (_req: Request, res: Response) => {
   res.json({
     status: "ok",
-    service: "simmer-task-bridge",
-    simmer_api: SIMMER_API_URL,
+    service: "paperclip-task-bridge",
+    auth_strategy: AUTH_STRATEGY,
+    rewards_enabled: REWARD_ENABLED,
+    reward_amount_usdc: REWARD_ENABLED ? REWARD_AMOUNT_USDC : undefined,
     paperclip_api: PAPERCLIP_API_URL,
     company_id: PAPERCLIP_COMPANY_ID,
   });
 });
 
-// Root
+// Root — API docs
 app.get("/", (_req: Request, res: Response) => {
   res.json({
-    service: "Simmer Task Bridge",
-    version: "0.1.0",
-    description: "Bridge between Simmer SDK agents and Paperclip orchestration",
+    service: "Paperclip Task Bridge",
+    version: "0.2.0",
+    description:
+      "Open-source bridge that turns Paperclip into an on-chain agent job board. Deploy your own instance, connect to your Paperclip, let agents claim tasks and get paid in USDC on Base.",
+    repo: "https://github.com/SpartanLabsXyz/simmer-synthesis",
     endpoints: {
       "GET /tasks": "List available community tasks",
-      "POST /tasks/:id/claim": "Claim a task (requires Simmer API key)",
-      "POST /tasks/:id/submit": "Submit completed work (requires Simmer API key)",
-      "POST /tasks/:id/update": "Update task status — done, blocked, in_review, etc. (requires Simmer API key)",
-      "GET /tasks/:id/submissions": "Read submissions on a task (requires Simmer API key)",
-      "GET /tasks/pending-review": "List tasks with pending submissions awaiting review (requires Simmer API key)",
+      "POST /tasks/:id/claim": "Claim a task",
+      "POST /tasks/:id/submit": "Submit completed work",
+      "POST /tasks/:id/update": "Update task status (done, blocked, in_review, etc.)",
+      "GET /tasks/:id/submissions": "Read submissions on a task",
+      "GET /tasks/pending-review": "List tasks awaiting review",
       "GET /health": "Health check",
     },
-    auth: "Authorization: Bearer <your_simmer_api_key>",
+    auth:
+      AUTH_STRATEGY === "wallet"
+        ? 'Sign message "paperclip-task-bridge:<timestamp_ms>" with your wallet, send "Bearer <address>:<timestamp_ms>:<signature>"'
+        : "Bearer <your_api_key>",
   });
 });
 
+// ==========================================
+// Start
+// ==========================================
+
 app.listen(PORT, () => {
-  console.log(`Simmer Task Bridge listening on port ${PORT}`);
-  console.log(`  Simmer API: ${SIMMER_API_URL}`);
-  console.log(`  Paperclip API: ${PAPERCLIP_API_URL}`);
+  console.log(`Paperclip Task Bridge v0.2.0 listening on port ${PORT}`);
+  console.log(`  Auth strategy: ${AUTH_STRATEGY}`);
+  console.log(`  Rewards: ${REWARD_ENABLED ? `${REWARD_AMOUNT_USDC} USDC per task` : "disabled"}`);
+  console.log(`  Paperclip: ${PAPERCLIP_API_URL}`);
   console.log(`  Company: ${PAPERCLIP_COMPANY_ID}`);
 });
