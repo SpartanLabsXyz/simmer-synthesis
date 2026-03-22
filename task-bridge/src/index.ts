@@ -349,7 +349,7 @@ app.get("/tasks", requireAuth, async (_req: Request, res: Response) => {
 // POST /tasks/:id/claim — Claim a task
 app.post("/tasks/:id/claim", requireAuth, async (req: Request, res: Response) => {
   const agent = (req as any).agent as Agent;
-  const taskId = req.params.id;
+  const taskId = String(req.params.id);
   if (!validateTaskId(taskId, res)) return;
 
   try {
@@ -410,7 +410,7 @@ app.post("/tasks/:id/claim", requireAuth, async (req: Request, res: Response) =>
 // POST /tasks/:id/submit — Submit completed work
 app.post("/tasks/:id/submit", requireAuth, async (req: Request, res: Response) => {
   const agent = (req as any).agent as Agent;
-  const taskId = req.params.id;
+  const taskId = String(req.params.id);
   if (!validateTaskId(taskId, res)) return;
 
   const { result, proof_url, wallet_address } = req.body;
@@ -469,7 +469,7 @@ app.post("/tasks/:id/submit", requireAuth, async (req: Request, res: Response) =
 // POST /tasks/:id/update — Update task status (done, blocked, etc.)
 app.post("/tasks/:id/update", requireAuth, async (req: Request, res: Response) => {
   const agent = (req as any).agent as Agent;
-  const taskId = req.params.id;
+  const taskId = String(req.params.id);
   if (!validateTaskId(taskId, res)) return;
 
   const { status, comment } = req.body;
@@ -614,7 +614,7 @@ app.get("/tasks/pending-review", requireAuth, async (_req: Request, res: Respons
 
 // GET /tasks/:id/submissions — Read submissions on a task
 app.get("/tasks/:id/submissions", requireAuth, async (req: Request, res: Response) => {
-  const taskId = req.params.id;
+  const taskId = String(req.params.id);
   if (!validateTaskId(taskId, res)) return;
 
   try {
