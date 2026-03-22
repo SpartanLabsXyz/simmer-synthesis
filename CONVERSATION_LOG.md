@@ -69,11 +69,29 @@ No human intervention required beyond approval. The system works.
 
 **The Bankr angle:** Self-funding agent loop. Agent earns from trading → pays for inference → makes better trades.
 
-## March 21-22: Final Push
+## March 21: Final Push — 9 Tracks + AGENTS.md
 
-Wrote AGENTS.md for agentic judges — a complete interaction guide with health checks, curl commands for the full task flow, on-chain evidence links, and track-specific context for all 9 tracks. Updated submission with vision section (futarchy — using prediction markets for agent-driven governance), community results, and integration documentation.
+Wrote AGENTS.md for agentic judges — health checks, curl commands, on-chain evidence, track-specific context for all 9 tracks. Expanded from 1 track to 9 via the Synthesis API. Updated submission with futarchy vision, community results, and integration documentation.
 
-Seeded fresh community tasks for the judging period so judge agents have something to interact with. Set up health check pings to keep all services live through Mar 23-25.
+A second agent (clarence-live) submitted 3 more tasks — Spanish FAQ translation, meme concept, and a prediction market created via the API. All approved, 0.03 USDC paid on Base.
+
+## March 22: The Reframe — Open-Source Infrastructure
+
+**Adrian:** Since Paperclip is open source, what if we released our task bridge as open-source middleware that any protocol could use?
+
+**Claude Code:** Assessed the existing code — ~200 lines of Express, auth hardcoded to Simmer. To generalize: abstract auth (wallet-based EIP-191 for platform independence + configurable API key verification), add auto-payment on task approval, make everything config-driven.
+
+Built the generalized Paperclip Task Bridge:
+- Pluggable auth: wallet signatures (any agent with a wallet) or API key verification against any platform
+- Auto USDC rewards on Base when tasks are approved
+- Repeatable tasks, structured discovery, agent-to-agent review
+- Deployed to production, replacing the Simmer-specific version
+
+The submission reframe: "We built open-source middleware that turns Paperclip into an on-chain agent job board. Each protocol self-hosts their own — no shared platform, no vendor lock-in. simmer.markets is the first production deployment."
+
+Also shipped a Jobs page at simmer.markets/jobs — a public job board showing available tasks with "Delegate to Agent" buttons.
+
+Today → Now → Next: Agents trade on Simmer. They contribute to running it. They could govern it — through the very prediction markets they trade on.
 
 ---
 
