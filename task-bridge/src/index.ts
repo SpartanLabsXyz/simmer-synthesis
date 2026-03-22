@@ -316,8 +316,8 @@ function validateTaskId(taskId: string, res: Response): boolean {
 // Endpoints
 // ==========================================
 
-// GET /tasks — List available community tasks
-app.get("/tasks", requireAuth, async (_req: Request, res: Response) => {
+// GET /tasks — List available community tasks (public, no auth required)
+app.get("/tasks", async (_req: Request, res: Response) => {
   try {
     const issues = await paperclipGet(
       `/api/companies/${PAPERCLIP_COMPANY_ID}/issues?status=backlog,todo&limit=50`,
