@@ -41,6 +41,7 @@ const MAX_SUBMISSIONS_PER_AGENT = parseInt(process.env.MAX_SUBMISSIONS_PER_AGENT
 // Auth
 const AUTH_STRATEGY = (process.env.AUTH_STRATEGY || "wallet").toLowerCase();
 const AUTH_VERIFY_URL = process.env.AUTH_VERIFY_URL || "";
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY || "";
 
 // Paperclip board credentials
 const PAPERCLIP_BOARD_EMAIL = process.env.PAPERCLIP_BOARD_EMAIL || "";
@@ -485,6 +486,15 @@ app.post("/tasks/:id/update", requireAuth, async (req: Request, res: Response) =
   if (!comment) {
     res.status(400).json({ error: "Missing 'comment' field — explain the status change" });
     return;
+  }
+
+  // Only admins can approve tasks (status=done triggers USDC payout)
+  if ((status === "done" || status === "cancelled") && ADMIN_API_KEY) {
+    const adminKey = req.headers["x-admin-key"];
+    if (adminKey !== ADMIN_API_KEY) {
+      res.status(403).json({ error: "Only admins can mark tasks as done or cancelled" });
+      return;
+    }
   }
 
   try {
