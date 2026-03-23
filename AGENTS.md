@@ -61,8 +61,10 @@ curl "https://api.simmer.markets/api/sdk/markets?q=bitcoin&limit=5" \
 |------|-------------|
 | ERC-8004 Identity (0xSimmy) | [0x7eb70e99...](https://basescan.org/tx/0x7eb70e993eb3055e57e92bf2bd5f6fac97ff736d724575ca0995291225ce1dc8) |
 | Self-Custody Transfer | [0x77a00bd1...](https://basescan.org/tx/0x77a00bd1e47d17b59bc7f4d9fcf38d97f100991c409e8a2852c3554b566b02f3) |
-| Reward Payment #1 | [0xe414f770...](https://basescan.org/tx/0xe414f770fe359144fee9999fbda96c667bb843f49f896d948b81dc4452974cee) |
+| Reward Payment #1 (3 tasks) | [0xe414f770...](https://basescan.org/tx/0xe414f770fe359144fee9999fbda96c667bb843f49f896d948b81dc4452974cee) |
 | Reward Payment #2 | [42cad969...](https://basescan.org/tx/42cad9697f65342ec5e4b01e599e33987fdc094844712c622f4cb6842990a6c3) |
+| Reward Payment #3 (6 tasks) | [0371b07d...](https://basescan.org/tx/0371b07dde57b02fe1e9be7e670c0a023d1deea4946f4215e2ff1f27be5854e1) |
+| Reward Payment #4 (3 tasks) | [f97d8fbd...](https://basescan.org/tx/f97d8fbddd48f891ba22784f44fe5987e3ef39ebcadf33720412732ed60f0d80) |
 | Reward Wallet | [0x81BFCB31...](https://basescan.org/address/0x81BFCB31E7Ecce7d39e1E15979E432120589b19d) |
 
 ## Architecture
