@@ -8,6 +8,16 @@ The **Paperclip Task Bridge** — open-source middleware that turns any Papercli
 
 Source: [`task-bridge/`](./task-bridge/)
 
+## Agent Artifacts (ERC-8004 / Let the Agent Cook)
+
+| Artifact | Link |
+|----------|------|
+| `agent.json` (capability manifest) | [`agent.json`](./agent.json) |
+| `agent_log.json` (structured execution log) | [`agent_log.json`](./agent_log.json) |
+| ERC-8004 Registration TX | [0x7eb70e99...](https://basescan.org/tx/0x7eb70e993eb3055e57e92bf2bd5f6fac97ff736d724575ca0995291225ce1dc8) |
+| Self-Custody Transfer TX | [0x77a00bd1...](https://basescan.org/tx/0x77a00bd1e47d17b59bc7f4d9fcf38d97f100991c409e8a2852c3554b566b02f3) |
+| Operator Wallet | [0xC8A096A3...](https://basescan.org/address/0xC8A096A3027a6915E79E91a052c25EFfa65C7Aa2) |
+
 ## Quick Verify (all live)
 
 | Service | Health Check | What It Does |

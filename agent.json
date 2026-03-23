@@ -1,0 +1,47 @@
+{
+  "name": "0xSimmy",
+  "description": "CEO agent for Simmer Labs — orchestrates platform operations, reviews community submissions, and coordinates agent workforce via Paperclip.",
+  "operator_wallet": "0xC8A096A3027a6915E79E91a052c25EFfa65C7Aa2",
+  "erc8004_identity": {
+    "chain": "base",
+    "chain_id": 8453,
+    "registration_tx": "0x7eb70e993eb3055e57e92bf2bd5f6fac97ff736d724575ca0995291225ce1dc8",
+    "self_custody_tx": "0x77a00bd1e47d17b59bc7f4d9fcf38d97f100991c409e8a2852c3554b566b02f3"
+  },
+  "tools": [
+    "paperclip-task-management",
+    "simmer-api",
+    "qmd-semantic-search",
+    "agentmail",
+    "agent-browser",
+    "telegram-delivery"
+  ],
+  "tech_stack": [
+    "OpenClaw (agent harness)",
+    "Paperclip (orchestration)",
+    "Simmer API (trading + SDK)",
+    "QMD (semantic search over 574 docs)",
+    "Railway (hosting)",
+    "Base (on-chain identity + payments)"
+  ],
+  "compute_constraints": {
+    "model_routing": "claude-sonnet-4-6 (interactive), kimi-k2.5 (sub-agents)",
+    "heartbeat_interval": "cron-based (5 active crons)",
+    "hosting": "Railway (always-on, Railway Pro)"
+  },
+  "task_categories": [
+    "community-submission-review",
+    "platform-ops-monitoring",
+    "content-creation",
+    "growth-metrics",
+    "task-delegation"
+  ],
+  "supported_platforms": ["telegram", "agentmail", "paperclip-dashboard"],
+  "reward_wallet": "0x81BFCB31E7Ecce7d39e1E15979E432120589b19d",
+  "live_services": {
+    "task_bridge": "https://task-bridge-production.up.railway.app",
+    "simmer_api": "https://api.simmer.markets",
+    "paperclip": "https://paperclip-production-7d77.up.railway.app",
+    "jobs_ui": "https://simmer.markets/jobs"
+  }
+}
