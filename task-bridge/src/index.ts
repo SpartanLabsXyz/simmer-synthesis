@@ -320,7 +320,7 @@ function validateTaskId(taskId: string, res: Response): boolean {
 app.get("/tasks", async (_req: Request, res: Response) => {
   try {
     const issues = await paperclipGet(
-      `/api/companies/${PAPERCLIP_COMPANY_ID}/issues?status=backlog,todo&limit=50`,
+      `/api/companies/${PAPERCLIP_COMPANY_ID}/issues?status=backlog,todo,in_progress&limit=50`,
     );
 
     const communityTasks = (issues as any[]).filter((issue: any) => {
